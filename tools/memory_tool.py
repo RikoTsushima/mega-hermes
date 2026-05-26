@@ -59,6 +59,67 @@ def get_memory_dir() -> Path:
 
 ENTRY_DELIMITER = "\n§\n"
 
+# ── L0/L1 scaffold templates ──────────────────────────────────────────────
+# Written once when META.md / INDEX.md don't exist yet, same as GA's
+# assets/global_mem_insight_template.txt pattern.
+
+_META_TEMPLATE = """\
+# 记忆系统 META-SOP (L0)
+
+## 核心公理
+
+1. **行动验证原则** — 写入 MEMORY.md/INDEX.md/sops/ 的信息必须源自成功的工具调用结果。禁止将推理猜测、未执行的计划作为事实写入。**No Execution, No Memory.**
+2. **神圣不可删改性** — 经行动验证的有效配置、避坑指南、关键路径，整理时可压缩文字、迁移层级，但绝不丢失准确性。修改时极度小心，只能少量 patch。
+3. **禁止存储易变状态** — 禁止存储：当前时间戳、临时 Session ID、正在运行的 PID、连接的设备信息等高频变化数据。
+4. **最小充分指针** — INDEX.md 只留能定位下层的最短标识，多一词即冗余。
+
+## 层级架构
+
+```
+INDEX.md  (L1: 极简索引 ≤30行, 存在性编码)
+    ↓ 导航指向
+MEMORY.md (L2: 环境事实库, §分隔条目)
+    ↓ 详细引用
+sops/*.md (L3-轻量: 任务级SOP)
+skills/   (L3-重量: 完整技能包)
+    ↓
+L4_sessions/ (L4: 历史会话归档, 自动收集)
+```
+
+## 写入决策树
+
+```
+学到新信息 →
+├─ 环境特异性事实? (路径/凭证/配置/IP) → MEMORY.md + INDEX加关键词
+├─ 全局红线/高频犯错? → INDEX.md [RULES] 一行
+├─ 任务级经验 + 复现成本高?
+│   ├─ 重量级(含脚本/多文件) → skills/<domain>/<name>/
+│   └─ 轻量级(单文SOP) → sops/<name>.md + INDEX指针
+└─ 通用常识/低ROI → 丢弃，不存储
+```
+
+## INDEX.md 维护规则
+
+- 硬约束: ≤30 行
+- 内容: 场景关键词→记忆定位 + RULES(红线+高频犯错点)
+- 只写存在性(什么场景有什么可用)，禁写 How-to 细节
+- 括号内只放反直觉触发词，名字自解释时不加注释
+- ROI = (不放这几个词的犯错概率 × 代价) / 每轮词数成本
+"""
+
+_INDEX_TEMPLATE = """\
+# [Memory Index] (L1 存在性索引)
+# 详细事实见 MEMORY.md | 写入规则见 META.md | 用户画像见 USER.md
+
+## 场景→记忆定位
+Facts(L2): MEMORY.md | SOPs(L3): ./sops/ + ../skills/ | Sessions(L4): ./L4_sessions/
+
+## [RULES]
+1. 写记忆前先读 META.md 确认层级归属
+2. INDEX ≤30行硬约束，只写存在性指针
+3. 环境事实→MEMORY.md; 任务经验→sops/; 通用常识→不存
+"""
+
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
@@ -203,6 +264,23 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
+        # Scaffold L0/L1 files on first run
+        meta_path = mem_dir / "META.md"
+        if not meta_path.exists():
+            try:
+                meta_path.write_text(_META_TEMPLATE, encoding="utf-8")
+            except Exception:
+                pass
+        index_path = mem_dir / "INDEX.md"
+        if not index_path.exists():
+            try:
+                index_path.write_text(_INDEX_TEMPLATE, encoding="utf-8")
+            except Exception:
+                pass
+        # Ensure L3/L4 directories exist
+        (mem_dir / "sops").mkdir(exist_ok=True)
+        (mem_dir / "L4_sessions").mkdir(exist_ok=True)
+
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
@@ -210,8 +288,18 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # L1 Index — load raw file content (not §-delimited entries)
+        index_content = ""
+        index_path = mem_dir / "INDEX.md"
+        if index_path.exists():
+            try:
+                index_content = index_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
+            "index": self._render_index_block(index_content),
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
         }
@@ -502,6 +590,15 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
+    def _render_index_block(content: str) -> str:
+        """Render the L1 INDEX block for system prompt."""
+        if not content:
+            return ""
+        separator = "═" * 46
+        header = "MEMORY INDEX (L1 — existence pointers, ≤30 lines)"
+        return f"{separator}\n{header}\n{separator}\n{content}"
+
+    @staticmethod
     def _read_file(path: Path) -> List[str]:
         """Read a memory file and split into entries.
 
@@ -645,8 +742,18 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "sop_save":
+        if not content:
+            return tool_error("Content is required for 'sop_save' action.", success=False)
+        if not old_text:
+            return tool_error("old_text (used as SOP name) is required for 'sop_save'.", success=False)
+        result = _sop_save(old_text, content)
+
+    elif action == "distill":
+        result = _distill()
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, sop_save, distill", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -654,6 +761,44 @@ def memory_tool(
 def check_memory_requirements() -> bool:
     """Memory tool has no external requirements -- always available."""
     return True
+
+
+def _sop_save(name: str, content: str) -> Dict[str, Any]:
+    """Save a lightweight SOP to memories/sops/<name>.md and update INDEX.md."""
+    import re
+    safe_name = re.sub(r'[^\w\-]', '_', name.strip())
+    if not safe_name:
+        return {"success": False, "error": "Invalid SOP name."}
+
+    sops_dir = get_memory_dir() / "sops"
+    sops_dir.mkdir(parents=True, exist_ok=True)
+    sop_path = sops_dir / f"{safe_name}.md"
+    sop_path.write_text(content, encoding="utf-8")
+
+    # Update INDEX.md with pointer if not already present
+    index_path = get_memory_dir() / "INDEX.md"
+    if index_path.exists():
+        index_text = index_path.read_text(encoding="utf-8")
+        if safe_name not in index_text:
+            lines = index_text.splitlines()
+            if len(lines) < 30:
+                lines.append(f"{safe_name}: sops/{safe_name}.md")
+                index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return {"success": True, "path": str(sop_path), "message": f"SOP '{safe_name}' saved."}
+
+
+def _distill() -> Dict[str, Any]:
+    """Return META.md content to guide the LLM through memory distillation."""
+    meta_path = get_memory_dir() / "META.md"
+    if not meta_path.exists():
+        return {"success": False, "error": "META.md not found. Cannot guide distillation."}
+    meta_content = meta_path.read_text(encoding="utf-8")
+    return {
+        "success": True,
+        "message": "Read the META-SOP below, then decide what to save and where.",
+        "meta_sop": meta_content,
+    }
 
 
 # =============================================================================
@@ -666,6 +811,10 @@ MEMORY_SCHEMA = {
         "Save durable information to persistent memory that survives across sessions. "
         "Memory is injected into future turns, so keep it compact and focused on facts "
         "that will still matter later.\n\n"
+        "IMPORTANT: Before writing to memory, consult the INDEX.md (L1) to understand "
+        "what already exists, and follow the layering rules in META.md (L0). "
+        "Environment facts → MEMORY.md; task-level SOPs → sops/ directory; "
+        "trivial/obvious info → don't store.\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
         "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
@@ -682,7 +831,9 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), "
+        "sop_save (save a task-level SOP to sops/ -- old_text=name, content=body), "
+        "distill (trigger memory distillation -- returns META.md rules to guide your decision).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -690,7 +841,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "sop_save", "distill"],
                 "description": "The action to perform."
             },
             "target": {

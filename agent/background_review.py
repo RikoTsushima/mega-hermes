@@ -33,11 +33,20 @@ logger = logging.getLogger(__name__)
 # the actual text lives here so future edits are one-place.
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
+    "MEMORY LAYERS (consult INDEX.md and META.md for full rules):\n"
+    "- MEMORY.md (L2): environment facts — paths, credentials, configs, IPs\n"
+    "- USER.md: user persona, preferences, communication style\n"
+    "- sops/*.md (L3): task-level SOPs — key pitfalls, prerequisites for complex tasks\n"
+    "- skills/ (L3): full skill packages for reusable workflows\n\n"
+    "DECISION: Only save ACTION-VERIFIED facts (confirmed by successful tool calls). "
+    "Never save guesses, plans, or common knowledge.\n\n"
     "Focus on:\n"
     "1. Has the user revealed things about themselves — their persona, desires, "
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
+    "style, or ways they want you to operate?\n"
+    "3. Did this session discover environment facts or task-specific pitfalls "
+    "that would be costly to re-discover?\n\n"
     "If something stands out, save it using the memory tool. "
     "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )

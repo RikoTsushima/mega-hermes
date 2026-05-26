@@ -275,6 +275,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = []
 
     if agent._memory_store:
+        # L1 Index — existence pointers for memory navigation
+        _index_block = agent._memory_store.format_for_system_prompt("index")
+        if _index_block:
+            volatile_parts.append(_index_block)
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
